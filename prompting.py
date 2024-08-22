@@ -18,7 +18,8 @@ HF_TOKEN = os.getenv('HUGGINGFACE_TOKEN')
 if not HF_TOKEN:
     raise ValueError("HUGGINGFACE_TOKEN not found in .env file")
 
-login(token="YOUR_HF_TOKEN")  
+login(token=HF_TOKEN)  
+
+dataset = load_dataset("RCODI/chatbot-conv")
 
 
-dataset = load_dataset("dataset_name")  
