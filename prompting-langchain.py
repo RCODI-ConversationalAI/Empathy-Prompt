@@ -1,5 +1,4 @@
 import langchain
-import predictionguard as pg
 import huggingface_hub
 import datasets
 
@@ -8,6 +7,23 @@ from datasets import load_dataset
 
 import os
 from dotenv import load_dotenv
+
+# Use ChatHuggingFace to set up an open-source model chatbot
+from langchain_community.llms import HuggingFaceEndpoint
+from langchain_community.chat_models import ChatHuggingFace
+
+zephyr_model = HuggingFaceEndpoint(
+    repo_id="HuggingFaceH4/zephyr-7b-beta",
+    task="text-generation",
+    pipeline_kwargs=dict(
+        max_new_tokens=512,
+        do_sample=False,
+        repetition_penalty=1.03,
+    ),
+)
+zephyr_chat = ChatHuggingFace(
+    llm=zephyr_model
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -118,13 +134,7 @@ def prepare_prompt_zephyr(context):
     )
 
 def get_zephyr_response(context):
-    respond_choices = pg.Completion.create(
-        model="Zephyr-7B-Beta",
-        prompt=prepare_prompt_zephyr(context),
-        max_tokens=300
-    )
-
-    result = respond_choices['choices'][0]['text']
+    result = zephyr_chat.invoke(context)
     return result
 
 def PromptandMetrics(row, model='llama'):
