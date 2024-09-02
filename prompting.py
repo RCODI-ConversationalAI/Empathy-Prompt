@@ -14,6 +14,7 @@ load_dotenv()
 
 # Get the Hugging Face token from the environment variable
 HF_TOKEN = os.getenv('HUGGINGFACE_TOKEN')
+PG_API_KEY = os.getenv('PREDICTIONGUARD_API_KEY')
 
 if not HF_TOKEN:
     raise ValueError("HUGGINGFACE_TOKEN not found in .env file")
@@ -22,7 +23,9 @@ login(token=HF_TOKEN)
 
 dataset = load_dataset("RCODI/chatbot-conv")
 
-print(dataset.type())
+data = dataset['train']
+
+client = pg.PredictionGuard(api_key=os.getenv('PG_API_KEY'))
 
 from langchain import PromptTemplate, FewShotPromptTemplate
 import ast
@@ -87,28 +90,25 @@ def chat_prompt(messages, demo_template, prefix, suffix):
 
     return few_shot_prompt.format(input=latest_message)
 
-## Helper function to prepare prompt into zephyr form
-def prepare_prompt_zephyr(context):
+def prepare_prompt_llama(context):
 
     # Prepare the few shot demonstration template
-    demo_template = """<|user|>
-    {user}</s>
-    <|assistant|>
-    {assistant}</s>
+    demo_template = """USER: {user}
+    ASSISTANT: {assistant}\n
     """
 
-    tcontext = ast.literal_eval(context)
     # This is the boilerplate portion of the prompt corresponding to
     # the prompt task instructions.
     system = ''
+    tcontext = ast.literal_eval(context)
     for turn in tcontext:
         if turn['role'] == 'system':
             system = turn['content']
-    prefix = "<|user|>\n" + system + "</s>\n",
+    prefix = "### Instruction:\n" + system + "\n\n",
 
     # The suffix of the prompt is where we will put the output indicator
     # and define where the "on-the-fly" user input would go.
-    suffix="<|user|>\n{input}</s>\n<|assistant|>\n",
+    suffix="### Input:\nUSER: {input}\n\n### Response:\nASSISTANT: ",
 
     return chat_prompt(
         tcontext,
@@ -117,15 +117,15 @@ def prepare_prompt_zephyr(context):
         suffix
     )
 
-def get_zephyr_response(context):
-    respond_choices = pg.Completion.create(
-        model="Zephyr-7B-Beta",
-        prompt=prepare_prompt_zephyr(context),
+def get_llama_response(context):
+    respond_choices = client.completions.create(
+        model="Nous-Hermes-Llama2-13B",
+        prompt=prepare_prompt_llama(context),
         max_tokens=300
     )
-
-    result = respond_choices['choices'][0]['text']
+    result = respond_choices['choices'][0]['text'].split('###')[0]
     return result
+
 
 def PromptandMetrics(row, model='llama'):
     context = row['Context']
@@ -133,10 +133,10 @@ def PromptandMetrics(row, model='llama'):
     if baseline is None:
         print('Empty baseline')
         baseline = 'Thank you.'
-    if model == 'zephyr':
-        response = get_zephyr_response(context)
+    # if model == 'zephyr':
+    #     response = get_llama_response(context)
 #   elif model == 'llama':
-#     response = get_llama_response(context)
+    response = get_llama_response(context)
 #   elif model == 'neural':
 #     response = get_neural_response(context)
 
@@ -214,10 +214,9 @@ def PromptandMetrics(row, model='llama'):
 #           "baseline interim questions": baseline_interim_q_score,
 #           "baseline caring statement": baseline_caring_statement_score}
     print(response)
-    return response
+    return {"response": response}
 
 init=300
 batch_length=5
-sub_data = dataset.select()
-responses = []
-responses = sub_data.map(lambda x: PromptandMetrics(x, model='zephyr'))
+sub_data = data.select(range(init, init+batch_length))
+responses = sub_data.map(lambda x: PromptandMetrics(x, model='llama'))

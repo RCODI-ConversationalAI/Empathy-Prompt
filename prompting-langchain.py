@@ -9,21 +9,7 @@ import os
 from dotenv import load_dotenv
 
 # Use ChatHuggingFace to set up an open-source model chatbot
-from langchain_community.llms import HuggingFaceEndpoint
-from langchain_community.chat_models import ChatHuggingFace
-
-zephyr_model = HuggingFaceEndpoint(
-    repo_id="HuggingFaceH4/zephyr-7b-beta",
-    task="text-generation",
-    pipeline_kwargs=dict(
-        max_new_tokens=512,
-        do_sample=False,
-        repetition_penalty=1.03,
-    ),
-)
-zephyr_chat = ChatHuggingFace(
-    llm=zephyr_model
-)
+from langchain_huggingface import ChatHuggingFace, HuggingFacePipeline
 
 # Load environment variables from .env file
 load_dotenv()
@@ -36,115 +22,56 @@ if not HF_TOKEN:
 
 login(token=HF_TOKEN)  
 
+zephyr_model = HuggingFacePipeline.from_model_id(
+    model_id="HuggingFaceH4/zephyr-7b-beta",
+    task="text-generation",
+    pipeline_kwargs=dict(
+        max_new_tokens=1000,
+        do_sample=True,
+        top_k=10,
+        top_p=0.7,
+        temperature=0.7,
+        repetition_penalty=1.18,
+    ),
+)
+zephyr_chat = ChatHuggingFace(
+    llm=zephyr_model
+)
+
 dataset = load_dataset("RCODI/chatbot-conv")
 
-print(dataset.type())
+data = dataset['train']
 
-from langchain import PromptTemplate, FewShotPromptTemplate
-import ast
+from langchain_core.messages import (
+    HumanMessage,
+    SystemMessage,
+    AIMessage,
+)
 
-def chat_prompt(messages, demo_template, prefix, suffix):
-
-    # Define a prompt template for the demonstrations.
-    demo_prompt = PromptTemplate(
-        input_variables=["user", "assistant"],
-        template=demo_template,
-    )
-
-    examples = []
-    user_entry = None
-    assistant_messages = []
-
-    for turn in messages:
-        # Skip system messages
-        if turn['role'] == 'system':
-            continue
-
-        if turn['role'] == 'user':
-            # If encountering a user message, process accumulated assistant messages first
-            if assistant_messages:
-                # Combine assistant messages and add to examples
-                examples.append({'user': user_entry, 'assistant': ' '.join(assistant_messages)})
-                assistant_messages = []  # Reset assistant messages list
-            # Update the user entry with the current message
-            user_entry = turn['content']
-        else:
-            # Accumulate assistant messages
-            assistant_messages.append(turn['content'])
-
-    # After the loop, check if there are unprocessed assistant messages
-    if assistant_messages:
-        if user_entry:
-            examples.append({'user': user_entry, 'assistant': ' '.join(assistant_messages)})
-        else:
-            # Handle case where there are only assistant messages at the end without a corresponding user message
-            examples.append({'user': 'Continue', 'assistant': ' '.join(assistant_messages)})
-
-    # Determine the latest message for prompt continuation
-    latest_message = 'Continue' if not user_entry else user_entry
-
-    # Prepare the few shot template
-    few_shot_prompt = FewShotPromptTemplate(
-
-        # This is the demonstration data we want to insert into the prompt.
-        examples=examples,
-        example_prompt=demo_prompt,
-        example_separator="",
-
-        # This is the boilerplate portion of the prompt corresponding to
-        # the prompt task instructions.
-        prefix=prefix[0],
-
-        # The suffix of the prompt is where we will put the output indicator
-        # and define where the "on-the-fly" user input would go.
-        suffix=suffix[0],
-        input_variables=["input"],
-    )
-
-    return few_shot_prompt.format(input=latest_message)
-
-## Helper function to prepare prompt into zephyr form
 def prepare_prompt_zephyr(context):
-
-    # Prepare the few shot demonstration template
-    demo_template = """<|user|>
-    {user}</s>
-    <|assistant|>
-    {assistant}</s>
-    """
-
-    tcontext = ast.literal_eval(context)
-    # This is the boilerplate portion of the prompt corresponding to
-    # the prompt task instructions.
-    system = ''
-    for turn in tcontext:
-        if turn['role'] == 'system':
-            system = turn['content']
-    prefix = "<|user|>\n" + system + "</s>\n",
-
-    # The suffix of the prompt is where we will put the output indicator
-    # and define where the "on-the-fly" user input would go.
-    suffix="<|user|>\n{input}</s>\n<|assistant|>\n",
-
-    return chat_prompt(
-        tcontext,
-        demo_template,
-        prefix,
-        suffix
-    )
+    messages = [
+        SystemMessage(content=context[0].content),
+    ]
+    for i in range(len(context)):
+        if i%2 == 1:
+            messages.append(HumanMessage(content=context[i].content))
+        else:
+            messages.append(AIMessage(content=context[i].content))
+    return messages
 
 def get_zephyr_response(context):
-    result = zephyr_chat.invoke(context)
+    responses = zephyr_chat.invoke(context)
+    result = responses.content
     return result
 
-def PromptandMetrics(row, model='llama'):
+def PromptandMetrics(row):
     context = row['Context']
     baseline = row['Baseline Response']
     if baseline is None:
         print('Empty baseline')
         baseline = 'Thank you.'
-    if model == 'zephyr':
-        response = get_zephyr_response(context)
+    messages = prepare_prompt_zephyr(context)
+    response = get_zephyr_response(messages)
 #   elif model == 'llama':
 #     response = get_llama_response(context)
 #   elif model == 'neural':
@@ -224,10 +151,9 @@ def PromptandMetrics(row, model='llama'):
 #           "baseline interim questions": baseline_interim_q_score,
 #           "baseline caring statement": baseline_caring_statement_score}
     print(response)
-    return response
+    return {"response": response}
 
 init=300
 batch_length=5
-sub_data = dataset.select()
-responses = []
-responses = sub_data.map(lambda x: PromptandMetrics(x, model='zephyr'))
+sub_data = data.select(range(init, init+batch_length))
+responses = sub_data.map(lambda x: PromptandMetrics(x))
